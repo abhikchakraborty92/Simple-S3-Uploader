@@ -3,9 +3,15 @@ import boto3
 import os
 import datetime
 import time
+from multiprocessing import Process
+from threading import Thread
+
+processes = []
+file_threads = []
+
+start = time.perf_counter()
 
 print('***S3 FILE UPLOADER***\n')
-
 # Reading the file for getting the details to files to upload on S3
 filelist = None
 try:
@@ -22,9 +28,6 @@ except:
 
 
 def log_df_uploader(log_tuple):
-    '''
-    This function writes the relevant logs into the log file after being called from upload_s3_file function
-    '''
     templist = []
     templist.append(log_tuple)
     log_df = pd.DataFrame(templist,columns=upload_columns)
@@ -40,9 +43,6 @@ def log_df_uploader(log_tuple):
 s3 = boto3.client('s3')
 
 def upload_s3_file(filename,fileaddress,s3bucket,s3_subfolder):
-
-    '''This function uploads the file and creates relevant logs into the log csv file'''
-    
     error = 'No Error Found'
     start_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     try:
@@ -50,9 +50,10 @@ def upload_s3_file(filename,fileaddress,s3bucket,s3_subfolder):
         result = 'SUCCESS'
         end_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         print('\t[FILE UPLOAD ALERT:] %s upload to the SUBFOLDER %s inside the bucket %s SUCCESSFUL\n'%(str(filename),str(s3_subfolder),str(s3bucket)))
-    except Exception as e:
+    except EnvironmentError as e:
         result = 'FAILURE'
         error = e
+        #print(error)
         end_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         print('\t[FILE UPLOAD ALERT:] %s upload to the SUBFOLDER %s inside the bucket %s FAILED\n'%(str(filename),str(s3_subfolder),str(s3bucket)))
     
@@ -63,40 +64,53 @@ def upload_s3_file(filename,fileaddress,s3bucket,s3_subfolder):
 
 
 def upload_to_s3(filename,folderaddress,s3bucket,s3_subfolder):
-
-    '''
-    Main function to be called to upload the file/folder. This is a recursive function
-    which looks into folders and creates a sub folder path to upload to S3
-    '''
-   
-    result = None    
+    result = None 
     if os.path.isdir(folderaddress)==True:
-        print(f'\n\n**** {filename} ****\n')
+        print(f'\n\n****{filename}****\n')
         time.sleep(1)
         print(f'Looking into contents...\n')
         contents = os.listdir(folderaddress)
         for item in contents:
             itemaddress = os.path.join(folderaddress,item)
             if os.path.isdir(itemaddress):
-                result = upload_to_s3(item,itemaddress,s3bucket,s3_subfolder+'/'+item)
+                #result = upload_to_s3(item,itemaddress,s3bucket,s3_subfolder+'/'+item)
+                th = Thread(target=upload_to_s3, args=[item,itemaddress,s3bucket,s3_subfolder+'/'+item])
+                th.start()
+                file_threads.append(th)
             else:
-                result = upload_s3_file(item,itemaddress,s3bucket,s3_subfolder+'/'+item)
+                #result = upload_s3_file(item,itemaddress,s3bucket,s3_subfolder+'/'+item)
+                th = Thread(target=upload_to_s3, args=[item,itemaddress,s3bucket,s3_subfolder+'/'+item])
+                th.start()
+                file_threads.append(th)
     else:
         result = upload_s3_file(filename,folderaddress,s3bucket,s3_subfolder)
     
+    # for file_thd in file_threads:
+    #     file_thd.join()
+    
     return result
 
-# Looping through filelist
-for row,index in filelist.iterrows():
-    fileaddress = os.path.join(filelist['filepath'][row],filelist['filename'][row])
 
-    if filelist['s3_subfolder_path'][row] is None:
-        filelist['s3_subfolder_path'][row] = filelist['filename'][row]
-    else:
-        filelist['s3_subfolder_path'][row] = str(os.path.join(filelist['s3_subfolder_path'][row],filelist['filename'][row])).replace('\\','/')
+if __name__ == '__main__':
+    # Looping through filelist
+    for row,index in filelist.iterrows():
+        fileaddress = os.path.join(filelist['filepath'][row],filelist['filename'][row])
 
-    upload_to_s3(filelist['filename'][row],fileaddress,filelist['s3bucket'][row],filelist['s3_subfolder_path'][row])
+        if filelist['s3_subfolder_path'][row] is None:
+            filelist['s3_subfolder_path'][row] = filelist['filename'][row]
+        else:
+            filelist['s3_subfolder_path'][row] = str(os.path.join(filelist['s3_subfolder_path'][row],filelist['filename'][row])).replace('\\','/')
 
-print('Process Completed')
+        thd = Process(target=upload_to_s3, args=[filelist['filename'][row],fileaddress,filelist['s3bucket'][row],filelist['s3_subfolder_path'][row]])
+        #upload_to_s3(filelist['filename'][row],fileaddress,filelist['s3bucket'][row],filelist['s3_subfolder_path'][row])
+        thd.start()
+        processes.append(thd)
+
+    for prcs in processes:
+        prcs.join()
+
+    end = time.perf_counter()
+
+    print(f'Process Completed in {round(end-start,2)} seconds')
 
 
